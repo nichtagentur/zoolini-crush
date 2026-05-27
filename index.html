@@ -1,0 +1,280 @@
+<!doctype html>
+<html lang="de">
+<head>
+<meta charset="utf-8">
+<title>Zoolini Crush</title>
+<style>
+  html,body{margin:0;height:100%;background:#fff5e6;color:#3a2a1a;font-family:system-ui,sans-serif;display:flex;flex-direction:column;align-items:center;user-select:none}
+  h1{margin:14px 0 4px;color:#d2691e;letter-spacing:1px}
+  #hud{display:flex;gap:24px;font-size:18px;margin:6px 0 10px;font-weight:600}
+  #hud b{color:#d2691e}
+  canvas{background:#ffe8c2;border:4px solid #d2691e;border-radius:14px;box-shadow:0 6px 20px #d2691e44;touch-action:none}
+  #msg{position:fixed;top:50%;left:50%;transform:translate(-50%,-50%);background:#fff;padding:22px 30px;border:3px solid #d2691e;border-radius:14px;text-align:center;display:none;box-shadow:0 10px 40px #0004}
+  button{margin-top:10px;padding:10px 22px;background:#d2691e;border:0;color:#fff;font-weight:bold;font-size:16px;cursor:pointer;border-radius:8px}
+  button:hover{background:#a0501a}
+  .tip{font-size:13px;opacity:.7;margin-top:6px}
+</style>
+</head>
+<body>
+  <h1>ZOOLINI CRUSH</h1>
+  <div id="hud">
+    <span>Punkte: <b id="score">0</b></span>
+    <span>Ziel: <b id="goal">1000</b></span>
+    <span>Zuege: <b id="moves">20</b></span>
+  </div>
+  <canvas id="c" width="512" height="512"></canvas>
+  <div class="tip">Tausche zwei benachbarte Tiere -- drei in einer Reihe loesen sich auf.</div>
+
+  <div id="msg">
+    <h2 id="msgTitle"></h2>
+    <p id="msgBody"></p>
+    <button id="msgBtn">Nochmal</button>
+  </div>
+
+<script>
+const cvs=document.getElementById('c'), ctx=cvs.getContext('2d');
+const N=8, T=64;                      // 8x8 grid, 64px tiles
+const $=id=>document.getElementById(id);
+
+// six pet types: dogs and cats in different colors
+const TYPES=[
+  {kind:'dog', col:'#8b5a2b', ear:'#5a3a1a'}, // brauner Hund
+  {kind:'dog', col:'#f4c977', ear:'#c79850'}, // Golden Retriever
+  {kind:'dog', col:'#222',    ear:'#000'   }, // schwarzer Hund
+  {kind:'cat', col:'#aaaaaa', ear:'#666'   }, // graue Katze
+  {kind:'cat', col:'#e88c3a', ear:'#b56720'}, // rote Katze
+  {kind:'cat', col:'#f4f0e6', ear:'#c7c0aa'}, // weisse Katze
+];
+
+let grid, score, moves, goal, sel, anim;
+
+function reset(){
+  score=0; moves=20; goal=600; sel=null; anim=null;
+  // generate grid with no initial matches
+  do { grid = Array.from({length:N},()=>Array.from({length:N},()=>rnd())); }
+  while(findMatches().length);
+  updateHUD();
+}
+function rnd(){ return Math.floor(Math.random()*TYPES.length); }
+
+function findMatches(){
+  const m=[];
+  for(let r=0;r<N;r++){
+    for(let c=0;c<N-2;c++){
+      const v=grid[r][c]; if(v<0) continue;
+      if(grid[r][c+1]===v && grid[r][c+2]===v){
+        let end=c+2; while(end+1<N && grid[r][end+1]===v) end++;
+        for(let k=c;k<=end;k++) m.push([r,k]);
+        c=end;
+      }
+    }
+  }
+  for(let c=0;c<N;c++){
+    for(let r=0;r<N-2;r++){
+      const v=grid[r][c]; if(v<0) continue;
+      if(grid[r+1][c]===v && grid[r+2][c]===v){
+        let end=r+2; while(end+1<N && grid[end+1][c]===v) end++;
+        for(let k=r;k<=end;k++) m.push([k,c]);
+        r=end;
+      }
+    }
+  }
+  // dedupe
+  const set=new Set(m.map(([r,c])=>r*N+c));
+  return [...set].map(i=>[Math.floor(i/N), i%N]);
+}
+
+function hasMove(){
+  for(let r=0;r<N;r++) for(let c=0;c<N;c++){
+    for(const [dr,dc] of [[0,1],[1,0]]){
+      const r2=r+dr,c2=c+dc; if(r2>=N||c2>=N) continue;
+      const t=grid[r][c]; grid[r][c]=grid[r2][c2]; grid[r2][c2]=t;
+      const m=findMatches().length;
+      grid[r2][c2]=grid[r][c]; grid[r][c]=t;
+      if(m) return true;
+    }
+  }
+  return false;
+}
+
+function neighbors(a,b){
+  return (a.r===b.r && Math.abs(a.c-b.c)===1) || (a.c===b.c && Math.abs(a.r-b.r)===1);
+}
+
+function swap(a,b){
+  const t=grid[a.r][a.c]; grid[a.r][a.c]=grid[b.r][b.c]; grid[b.r][b.c]=t;
+}
+
+function trySwap(a,b){
+  if(anim||moves<=0) return;
+  swap(a,b);
+  const m=findMatches();
+  if(!m.length){ swap(a,b); flash(a,b); return; }
+  moves--;
+  resolveCascades();
+  updateHUD();
+}
+
+let flashT=0, flashCells=[];
+function flash(a,b){ flashT=20; flashCells=[a,b]; }
+
+function resolveCascades(){
+  anim={phase:'pop', t:0, cells:findMatches()};
+}
+
+function stepAnim(){
+  if(!anim) return;
+  anim.t++;
+  if(anim.phase==='pop'){
+    if(anim.t>=14){
+      // remove cells, award score
+      const n=anim.cells.length;
+      score += n*10 * Math.max(1, Math.floor(n/3));
+      for(const [r,c] of anim.cells) grid[r][c]=-1;
+      anim={phase:'fall', t:0};
+    }
+  } else if(anim.phase==='fall'){
+    // gravity: pull tiles down one step per ~3 frames
+    if(anim.t%3===0){
+      let moved=false;
+      for(let c=0;c<N;c++){
+        for(let r=N-1;r>0;r--){
+          if(grid[r][c]<0 && grid[r-1][c]>=0){
+            grid[r][c]=grid[r-1][c]; grid[r-1][c]=-1; moved=true;
+          }
+        }
+        if(grid[0][c]<0){ grid[0][c]=rnd(); moved=true; }
+      }
+      if(!moved){
+        const next=findMatches();
+        if(next.length){ anim={phase:'pop', t:0, cells:next}; }
+        else {
+          anim=null;
+          // deadlock check: if no legal swap creates a match, reshuffle
+          if(!hasMove()){
+            do { grid = Array.from({length:N},()=>Array.from({length:N},()=>rnd())); }
+            while(findMatches().length || !hasMove());
+          }
+          checkEnd();
+        }
+      }
+    }
+  }
+}
+
+function checkEnd(){
+  if(score>=goal){ showMsg('Geschafft!','Punkte: <b>'+score+'</b><br>Du hast die Tiere gluecklich gemacht.', 'Neue Runde'); }
+  else if(moves<=0){ showMsg('Aus!','Punkte: <b>'+score+'</b> / Ziel '+goal+'<br>Probier es nochmal.', 'Nochmal'); }
+}
+
+function updateHUD(){ $('score').textContent=score; $('moves').textContent=moves; $('goal').textContent=goal; }
+
+// ---- drawing ----
+function drawPet(x,y,type,scale=1,alpha=1){
+  const t=TYPES[type];
+  ctx.save();
+  ctx.translate(x+T/2, y+T/2);
+  ctx.scale(scale,scale);
+  ctx.globalAlpha=alpha;
+  // ears
+  ctx.fillStyle=t.ear;
+  if(t.kind==='cat'){
+    ctx.beginPath(); ctx.moveTo(-18,-14); ctx.lineTo(-22,-30); ctx.lineTo(-6,-20); ctx.closePath(); ctx.fill();
+    ctx.beginPath(); ctx.moveTo( 18,-14); ctx.lineTo( 22,-30); ctx.lineTo(  6,-20); ctx.closePath(); ctx.fill();
+  } else {
+    ctx.beginPath(); ctx.ellipse(-18,-10,8,14,-0.4,0,Math.PI*2); ctx.fill();
+    ctx.beginPath(); ctx.ellipse( 18,-10,8,14, 0.4,0,Math.PI*2); ctx.fill();
+  }
+  // head
+  ctx.fillStyle=t.col;
+  ctx.beginPath(); ctx.arc(0,0,22,0,Math.PI*2); ctx.fill();
+  // snout / inner
+  ctx.fillStyle='#fff8ee';
+  ctx.beginPath(); ctx.ellipse(0,6,11,8,0,0,Math.PI*2); ctx.fill();
+  // eyes
+  ctx.fillStyle='#1a1a1a';
+  ctx.beginPath(); ctx.arc(-8,-4,3,0,Math.PI*2); ctx.fill();
+  ctx.beginPath(); ctx.arc( 8,-4,3,0,Math.PI*2); ctx.fill();
+  // nose
+  ctx.fillStyle=t.kind==='cat' ? '#e88aa0' : '#222';
+  ctx.beginPath(); ctx.arc(0,4,2.4,0,Math.PI*2); ctx.fill();
+  // mouth
+  ctx.strokeStyle='#222'; ctx.lineWidth=1.4;
+  ctx.beginPath(); ctx.moveTo(0,6); ctx.quadraticCurveTo(-4,11,-7,9);
+  ctx.moveTo(0,6); ctx.quadraticCurveTo(4,11,7,9); ctx.stroke();
+  // whiskers for cat
+  if(t.kind==='cat'){
+    ctx.beginPath();
+    ctx.moveTo(-10,5); ctx.lineTo(-22,3);
+    ctx.moveTo(-10,7); ctx.lineTo(-22,8);
+    ctx.moveTo( 10,5); ctx.lineTo( 22,3);
+    ctx.moveTo( 10,7); ctx.lineTo( 22,8);
+    ctx.stroke();
+  }
+  ctx.restore();
+}
+
+function draw(){
+  ctx.clearRect(0,0,cvs.width,cvs.height);
+  // grid background
+  for(let r=0;r<N;r++)for(let c=0;c<N;c++){
+    ctx.fillStyle=(r+c)%2 ? '#ffe0a8' : '#ffd48a';
+    ctx.fillRect(c*T,r*T,T,T);
+  }
+  // pets
+  const popping = anim && anim.phase==='pop' ? new Set(anim.cells.map(([r,c])=>r*N+c)) : null;
+  for(let r=0;r<N;r++)for(let c=0;c<N;c++){
+    const v=grid[r][c]; if(v<0) continue;
+    let scale=1, alpha=1;
+    if(popping && popping.has(r*N+c)){
+      const p=anim.t/14; scale=1+p*0.4; alpha=1-p;
+    }
+    drawPet(c*T, r*T, v, scale, alpha);
+  }
+  // selection highlight
+  if(sel){
+    ctx.strokeStyle='#d2691e'; ctx.lineWidth=4;
+    ctx.strokeRect(sel.c*T+3, sel.r*T+3, T-6, T-6);
+  }
+  // flash on illegal swap
+  if(flashT>0){
+    ctx.fillStyle='rgba(255,80,80,'+(flashT/30)+')';
+    for(const f of flashCells) ctx.fillRect(f.c*T, f.r*T, T, T);
+    flashT--;
+  }
+}
+
+function loop(){
+  stepAnim();
+  draw();
+  requestAnimationFrame(loop);
+}
+
+// ---- input ----
+function cellAt(ev){
+  const r=cvs.getBoundingClientRect();
+  const x=(ev.clientX-r.left)*cvs.width/r.width;
+  const y=(ev.clientY-r.top)*cvs.height/r.height;
+  return {r:Math.floor(y/T), c:Math.floor(x/T)};
+}
+cvs.addEventListener('pointerdown',ev=>{
+  if(anim||moves<=0) return;
+  const cell=cellAt(ev);
+  if(cell.r<0||cell.r>=N||cell.c<0||cell.c>=N) return;
+  if(!sel){ sel=cell; return; }
+  if(sel.r===cell.r && sel.c===cell.c){ sel=null; return; }
+  if(neighbors(sel,cell)){ const a=sel; sel=null; trySwap(a,cell); }
+  else { sel=cell; }
+});
+
+function showMsg(title,body,btn){
+  $('msgTitle').innerHTML=title; $('msgBody').innerHTML=body; $('msgBtn').textContent=btn;
+  $('msg').style.display='block';
+}
+$('msgBtn').onclick=()=>{ $('msg').style.display='none'; reset(); };
+
+reset();
+loop();
+</script>
+</body>
+</html>
